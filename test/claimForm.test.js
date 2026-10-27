@@ -26,6 +26,7 @@ const constants = {
   RIGHT_ADD,
   RIGHT_CLAIMREVIEW,
   RIGHT_FEEDBACK,
+  RIGHT_UPDATE,
   RIGHT_LOAD,
   RIGHT_PRINT: 111006,
   RIGHT_RESTORE: 111012,
@@ -224,12 +225,13 @@ function testPermissionMatrix() {
   const editable = (rights, options = {}) => !permissions.isClaimFormReadOnly({ rights, claim: claim(), ...options });
 
   assert.strictEqual(permissions.claimFormRequiredRight({}), RIGHT_ADD);
-  assert.strictEqual(permissions.claimFormRequiredRight({ isExistingEntry: true }), RIGHT_LOAD);
+  assert.strictEqual(permissions.claimFormRequiredRight({ isExistingEntry: true }), RIGHT_UPDATE);
   assert.strictEqual(permissions.claimFormRequiredRight({ forReview: true }), RIGHT_CLAIMREVIEW);
   assert.strictEqual(permissions.claimFormRequiredRight({ forFeedback: true }), RIGHT_FEEDBACK);
   assert.strictEqual(editable([RIGHT_ADD]), true);
   assert.strictEqual(editable([RIGHT_CLAIMREVIEW]), false);
-  assert.strictEqual(editable([RIGHT_LOAD], { claimUuid: "existing-claim" }), true);
+  assert.strictEqual(editable([RIGHT_UPDATE, RIGHT_LOAD], { claimUuid: "existing-claim" }), true);
+  assert.strictEqual(editable([RIGHT_LOAD], { claimUuid: "existing-claim" }), false);
   assert.strictEqual(editable([RIGHT_ADD], { claimUuid: "existing-claim" }), false);
   assert.strictEqual(editable([RIGHT_CLAIMREVIEW], { forReview: true, claim: claim({ status: STATUS_REVIEW, reviewStatus: 4 }) }), true);
   assert.strictEqual(editable([RIGHT_CLAIMREVIEW], { forReview: true, claim: claim({ status: STATUS_REVIEW, reviewStatus: 8 }) }), false);
@@ -253,6 +255,18 @@ function testRealClaimFormRender() {
   const reviewer = findElement(reviewerOnNewForm.render(), "Form");
   assert.strictEqual(reviewer.props.readOnly, true, "reviewer-only actor cannot edit ordinary new entry");
   assert.strictEqual(reviewer.props.save, null, "read-only new form does not expose save");
+
+  const loadOnly = new ClaimForm(baseClaimProps({ rights: [RIGHT_LOAD], fetchedClaim: true }));
+  loadOnly.state.claim_uuid = "existing-claim";
+  loadOnly.state.claim.uuid = "existing-claim";
+  const loaded = findElement(loadOnly.render(), "Form");
+  assert.strictEqual(loaded.props.readOnly, true, "load-only actor cannot update an existing claim");
+  assert.strictEqual(loaded.props.save, null, "load-only form does not expose update");
+  const updater = new ClaimForm(baseClaimProps({ rights: [RIGHT_LOAD, RIGHT_UPDATE], fetchedClaim: true }));
+  updater.state.claim_uuid = "existing-claim";
+  updater.state.claim.uuid = "existing-claim";
+  const updated = findElement(updater.render(), "Form");
+  assert.strictEqual(updated.props.readOnly, false, "existing update requires the backend update right");
 
   const validReview = new ClaimForm(
     baseClaimProps({ rights: [RIGHT_CLAIMREVIEW], forReview: true }),

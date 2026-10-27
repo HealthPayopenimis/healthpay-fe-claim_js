@@ -2,13 +2,13 @@ import {
   RIGHT_ADD,
   RIGHT_CLAIMREVIEW,
   RIGHT_FEEDBACK,
-  RIGHT_LOAD,
+  RIGHT_UPDATE,
 } from "../constants";
 
 export function claimFormRequiredRight({ forReview = false, forFeedback = false, isExistingEntry = false }) {
   if (forReview) return RIGHT_CLAIMREVIEW;
   if (forFeedback) return RIGHT_FEEDBACK;
-  return isExistingEntry ? RIGHT_LOAD : RIGHT_ADD;
+  return isExistingEntry ? RIGHT_UPDATE : RIGHT_ADD;
 }
 
 export function isClaimFormReadOnly({
