@@ -1,145 +1,385 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
+const childProcess = require("child_process");
+
+const TOOLCHAIN = "/home/ubuntu/healthpay-v3-execution/module-toolchain/node_modules";
+const MODULE_PATHS = [TOOLCHAIN, path.join(__dirname, "../node_modules")];
+const resolveModule = (name) => require.resolve(name, { paths: MODULE_PATHS });
+const babel = require(resolveModule("@babel/core"));
+const presetEnv = require(resolveModule("@babel/preset-env"));
+const presetReact = require(resolveModule("@babel/preset-react"));
+const classProperties = require(resolveModule("@babel/plugin-proposal-class-properties"));
 
 const RIGHT_ADD = 111002;
 const RIGHT_CLAIMREVIEW = 111008;
 const RIGHT_FEEDBACK = 111009;
 const RIGHT_UPDATE = 111010;
 const RIGHT_LOAD = 111005;
+const STATUS_ENTERED = 2;
+const STATUS_REVIEW = 4;
+const BASELINE = "15587e2961f59ab26e1d21cdef97ef12a5182309";
+const repoRoot = path.join(__dirname, "..");
 
-function loadPermissionHelper() {
-  const filename = path.join(__dirname, "../src/components/claimFormPermissions.js");
-  const source = fs
-    .readFileSync(filename, "utf8")
-    .replace(
-      /import \{[\s\S]*?\} from "\.\.\/constants";\n\n/,
-      "",
-    )
-    .replace(/export function /g, "function ");
+const constants = {
+  RIGHT_ADD,
+  RIGHT_CLAIMREVIEW,
+  RIGHT_FEEDBACK,
+  RIGHT_LOAD,
+  RIGHT_PRINT: 111006,
+  RIGHT_RESTORE: 111012,
+  STATUS_REJECTED: 1,
+  DEFAULT: {
+    AUTOGENERATE_CLAIM_CODE: false,
+    EXPLANATION_REQUIRED_IF_ABOVE_THRESHOLD: false,
+    QUANTITY_EXPLANATION_THRESHOLD: 1,
+    QUANTITY_MAX_VALUE: 10000,
+  },
+  REFERRAL: "R",
+  SERVICE_TYPE_PP_S: "S",
+  CARE_TYPE_STATUS: ["IPD", "OPD"],
+  IN_PATIENT_STRING: "IPD",
+  STORAGE_KEY_ADMIN: "admin",
+  STORAGE_KEY_CLAIM_HEALTH_FACILITY: "claimHealthFacility",
+};
+
+function makeReact() {
+  class Component {
+    constructor(props) {
+      this.props = props;
+    }
+
+    setState(update, callback) {
+      const next = typeof update === "function" ? update(this.state, this.props) : update;
+      this.state = { ...this.state, ...next };
+      if (callback) callback();
+    }
+
+    forceUpdate() {}
+  }
+  const createElement = (type, props, ...children) => ({
+    type,
+    props: { ...(props || {}), ...(children.length ? { children } : {}) },
+  });
+  return { Component, Fragment: "Fragment", createElement, useState: () => [null, () => {}] };
+}
+
+function identity(value) {
+  return value;
+}
+
+function makeCore() {
+  const core = {
+    Contributions: "Contributions",
+    Form: "Form",
+    Helmet: "Helmet",
+    ProgressOrError: "ProgressOrError",
+    PublishedComponent: "PublishedComponent",
+    formatMessage: (_intl, _module, key) => key,
+    formatMessageWithValues: (_intl, _module, key, values) => `${key}:${JSON.stringify(values || {})}`,
+    journalize: () => {},
+    toISODate: (date) => date.toISOString(),
+    withHistory: identity,
+    withModulesManager: identity,
+    fetchMutation: () => Promise.resolve({}),
+    parseData: () => [],
+    coreAlert: () => {},
+    historyPush: () => {},
+  };
+  return core;
+}
+
+function makeModuleManager() {
+  return {
+    getConf: (_module, key, fallback) => {
+      if (key === "newClaim.status") return STATUS_ENTERED;
+      return fallback;
+    },
+    getRef: () => "claim-edit",
+  };
+}
+
+function makeRequire({ baseline = false } = {}) {
+  const React = makeReact();
+  const core = makeCore();
+  const actions = {
+    claimHealthFacilitySet: () => {},
+    fetchClaim: () => {},
+    generate: () => {},
+    print: () => {},
+    createClaim: () => Promise.resolve("created"),
+    updateClaim: () => Promise.resolve("updated"),
+  };
+  const components = new Proxy({}, { get: (_target, name) => name });
+  return (request) => {
+    if (request === "react") return React;
+    if (request === "redux") return { bindActionCreators: (value) => value };
+    if (request === "react-redux") return { connect: () => identity };
+    if (request === "react-intl") return { injectIntl: identity };
+    if (request === "moment") return () => ({ toDate: () => new Date("2026-01-01T00:00:00.000Z") });
+    if (request === "@openimis/fe-core") return core;
+    if (request === "../constants") return constants;
+    if (request === "../actions") return actions;
+    if (request === "./claimFormPermissions") {
+      return loadModule(path.join(repoRoot, "src/components/claimFormPermissions.js"), {
+        transformOptions: { includeHelper: true },
+      });
+    }
+    if (request.startsWith("./") || request.startsWith("../")) return components;
+    if (request.startsWith("@material-ui")) {
+      if (request === "@material-ui/core") return { Fab: "Fab", Badge: "Badge", Button: "Button", Grid: "Grid" };
+      if (request === "@material-ui/core/styles") return { withStyles: () => identity, withTheme: identity };
+      return { default: "Icon" };
+    }
+    if (request === "prop-types") return {};
+    return {};
+  };
+}
+
+function transpile(source, filename) {
+  return babel.transformSync(source, {
+    filename,
+    babelrc: false,
+    configFile: false,
+    presets: [[presetEnv, { modules: "commonjs" }], presetReact],
+    plugins: [classProperties],
+  }).code;
+}
+
+function loadModule(filename, options = {}) {
+  const source = options.source || fs.readFileSync(filename, "utf8");
+  const transformed = transpile(source, filename);
   const module = { exports: {} };
-  new Function("module", "exports", `${source}\nmodule.exports = { claimFormRequiredRight, isClaimFormReadOnly, recoverClaimFormAfterSaveError, saveClaimWithRecovery };`)(
+  const localRequire = options.require || makeRequire(options);
+  const context = vm.createContext({
     module,
-    module.exports,
-  );
+    exports: module.exports,
+    require: localRequire,
+    console,
+    Promise,
+    Error,
+    JSON,
+    Date,
+    Math,
+    parseFloat,
+    Number,
+    isNaN,
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+    },
+  });
+  const append = options.exportNames || [];
+  const suffix = append.length ? `\nmodule.exports.__classes = { ${append.join(", ")} };` : "";
+  new vm.Script(`${transformed}${suffix}`, { filename }).runInContext(context);
   return module.exports;
 }
 
-Object.assign(global, { RIGHT_ADD, RIGHT_CLAIMREVIEW, RIGHT_FEEDBACK, RIGHT_LOAD });
-const {
-  claimFormRequiredRight,
-  isClaimFormReadOnly,
-  recoverClaimFormAfterSaveError,
-  saveClaimWithRecovery,
-} = loadPermissionHelper();
+function loadClass(filename, className, options = {}) {
+  return loadModule(filename, { ...options, exportNames: [className] }).__classes[className];
+}
 
-const claim = (overrides = {}) => ({ status: 2, ...overrides });
-const editable = (rights, options = {}) => !isClaimFormReadOnly({ rights, claim: claim(), ...options });
+function baseClaimProps(overrides = {}) {
+  return {
+    modulesManager: makeModuleManager(),
+    rights: [RIGHT_ADD],
+    claimHealthFacilitySet: () => {},
+    fetchClaim: () => {},
+    journalize: () => {},
+    print: () => {},
+    generate: () => {},
+    fetchMutation: () => Promise.resolve({}),
+    coreAlert: () => {},
+    intl: {},
+    classes: { lockedPage: "locked" },
+    fetchingClaim: false,
+    fetchedClaim: false,
+    errorClaim: null,
+    add: () => {},
+    save: () => Promise.resolve("saved"),
+    back: () => {},
+    isClaimCodeValid: true,
+    ...overrides,
+  };
+}
+
+function findElement(tree, type) {
+  if (!tree || typeof tree !== "object") return null;
+  if (tree.type === type) return tree;
+  const children = tree.props && tree.props.children;
+  for (const child of Array.isArray(children) ? children : [children]) {
+    const found = findElement(child, type);
+    if (found) return found;
+  }
+  return null;
+}
 
 function testPermissionMatrix() {
-  assert.strictEqual(claimFormRequiredRight({}), RIGHT_ADD);
-  assert.strictEqual(claimFormRequiredRight({ isExistingEntry: true }), RIGHT_LOAD);
-  assert.strictEqual(claimFormRequiredRight({ forReview: true }), RIGHT_CLAIMREVIEW);
-  assert.strictEqual(claimFormRequiredRight({ forFeedback: true }), RIGHT_FEEDBACK);
+  const permissions = loadModule(path.join(repoRoot, "src/components/claimFormPermissions.js"), {
+    require: (request) => (request === "../constants" ? constants : {}),
+  });
+  const claim = (overrides = {}) => ({ status: STATUS_ENTERED, ...overrides });
+  const editable = (rights, options = {}) => !permissions.isClaimFormReadOnly({ rights, claim: claim(), ...options });
 
-  assert.strictEqual(editable([RIGHT_ADD]), true, "entry-only actor can edit a new entered claim");
-  assert.strictEqual(editable([RIGHT_ADD, RIGHT_CLAIMREVIEW]), true, "entry actor with reviewer right remains editable");
-  assert.strictEqual(editable([RIGHT_CLAIMREVIEW]), false, "reviewer-only actor cannot create a new claim");
-  assert.strictEqual(editable([]), false, "actor without entry right cannot create a new claim");
-
-  assert.strictEqual(
-    editable([RIGHT_LOAD], { claimUuid: "existing-claim" }),
-    true,
-    "existing ordinary entry uses the existing load/edit contract",
-  );
-  assert.strictEqual(
-    editable([RIGHT_ADD], { claimUuid: "existing-claim" }),
-    false,
-    "entry right alone does not broaden existing-claim edit access",
-  );
-
-  assert.strictEqual(
-    editable([RIGHT_CLAIMREVIEW], { forReview: true, claim: claim({ status: 4, reviewStatus: 4 }) }),
-    true,
-    "reviewer can edit a valid review claim",
-  );
-  assert.strictEqual(
-    editable([RIGHT_ADD], { forReview: true, claim: claim({ status: 4, reviewStatus: 4 }) }),
-    false,
-    "entry-only actor cannot edit a review claim",
-  );
-  assert.strictEqual(
-    editable([RIGHT_CLAIMREVIEW], { forReview: true, claim: claim({ status: 4, reviewStatus: 8 }) }),
-    false,
-    "delivered review remains locked",
-  );
-  assert.strictEqual(
-    editable([RIGHT_CLAIMREVIEW], { forReview: true, claim: claim({ status: 2, reviewStatus: 4 }) }),
-    false,
-    "non-review main status remains locked",
-  );
-
-  assert.strictEqual(
-    editable([RIGHT_FEEDBACK], { forFeedback: true, claim: claim({ status: 4 }) }),
-    true,
-    "feedback right permits valid feedback detail",
-  );
-  assert.strictEqual(
-    editable([RIGHT_UPDATE], { forFeedback: true, claim: claim({ status: 4 }) }),
-    false,
-    "update right alone does not invent feedback-detail access",
-  );
-  assert.strictEqual(
-    editable([RIGHT_FEEDBACK], { forFeedback: true, claim: claim({ status: 2 }) }),
-    false,
-    "feedback status lock remains effective",
-  );
-
-  assert.strictEqual(editable([RIGHT_ADD], { lockNew: true }), false, "new-form lock remains effective");
-  assert.strictEqual(editable([RIGHT_ADD], { isSaved: true }), false, "saved-form lock remains effective");
-  assert.strictEqual(editable([RIGHT_ADD], { claim: claim({ status: 1 }) }), false, "status lock remains effective");
+  assert.strictEqual(permissions.claimFormRequiredRight({}), RIGHT_ADD);
+  assert.strictEqual(permissions.claimFormRequiredRight({ isExistingEntry: true }), RIGHT_LOAD);
+  assert.strictEqual(permissions.claimFormRequiredRight({ forReview: true }), RIGHT_CLAIMREVIEW);
+  assert.strictEqual(permissions.claimFormRequiredRight({ forFeedback: true }), RIGHT_FEEDBACK);
+  assert.strictEqual(editable([RIGHT_ADD]), true);
+  assert.strictEqual(editable([RIGHT_CLAIMREVIEW]), false);
+  assert.strictEqual(editable([RIGHT_LOAD], { claimUuid: "existing-claim" }), true);
+  assert.strictEqual(editable([RIGHT_ADD], { claimUuid: "existing-claim" }), false);
+  assert.strictEqual(editable([RIGHT_CLAIMREVIEW], { forReview: true, claim: claim({ status: STATUS_REVIEW, reviewStatus: 4 }) }), true);
+  assert.strictEqual(editable([RIGHT_CLAIMREVIEW], { forReview: true, claim: claim({ status: STATUS_REVIEW, reviewStatus: 8 }) }), false);
+  assert.strictEqual(editable([RIGHT_FEEDBACK], { forFeedback: true, claim: claim({ status: STATUS_REVIEW }) }), true);
+  assert.strictEqual(editable([RIGHT_UPDATE], { forFeedback: true, claim: claim({ status: STATUS_REVIEW }) }), false);
+  assert.strictEqual(editable([RIGHT_ADD], { lockNew: true }), false);
+  assert.strictEqual(editable([RIGHT_ADD], { isSaved: true }), false);
+  assert.strictEqual(editable([RIGHT_ADD], { claim: claim({ status: 1 }) }), false);
 }
 
-async function testMockedComponentSaveRecovery() {
-  const initialState = { lockNew: true, isSaved: true, claim: { status: 2 } };
-  const recovered = recoverClaimFormAfterSaveError(initialState);
-  assert.deepStrictEqual(recovered, { ...initialState, lockNew: false, isSaved: false });
+function testRealClaimFormRender() {
+  const ClaimForm = loadClass(path.join(repoRoot, "src/components/ClaimForm.js"), "ClaimForm");
+  const entryForm = new ClaimForm(baseClaimProps({ rights: [RIGHT_ADD] }));
+  const entryTree = entryForm.render();
+  const entry = findElement(entryTree, "Form");
+  assert.ok(entry, "real ClaimForm renders the core Form");
+  assert.strictEqual(entry.props.readOnly, false, "entry-only actor gets an editable new form");
+  assert.strictEqual(typeof entry.props.save, "function", "editable new form exposes save");
 
+  const reviewerOnNewForm = new ClaimForm(baseClaimProps({ rights: [RIGHT_CLAIMREVIEW] }));
+  const reviewer = findElement(reviewerOnNewForm.render(), "Form");
+  assert.strictEqual(reviewer.props.readOnly, true, "reviewer-only actor cannot edit ordinary new entry");
+  assert.strictEqual(reviewer.props.save, null, "read-only new form does not expose save");
+
+  const validReview = new ClaimForm(
+    baseClaimProps({ rights: [RIGHT_CLAIMREVIEW], forReview: true }),
+  );
+  validReview.state.claim = { ...validReview.state.claim, status: STATUS_REVIEW, reviewStatus: 4 };
+  const review = findElement(validReview.render(), "Form");
+  assert.strictEqual(review.props.readOnly, false, "reviewer can edit a valid review form");
+
+  const lockedReview = new ClaimForm(
+    baseClaimProps({ rights: [RIGHT_CLAIMREVIEW], forReview: true }),
+  );
+  lockedReview.state.claim = { ...lockedReview.state.claim, status: STATUS_REVIEW, reviewStatus: 8 };
+  const locked = findElement(lockedReview.render(), "Form");
+  assert.strictEqual(locked.props.readOnly, true, "delivered review remains locked");
+}
+
+async function testRealClaimFormSaveRecovery() {
+  const ClaimForm = loadClass(path.join(repoRoot, "src/components/ClaimForm.js"), "ClaimForm");
   let saveCalls = 0;
-  let errorCalls = 0;
-  let successCalls = 0;
-  await saveClaimWithRecovery(
-    () => {
-      saveCalls += 1;
-      return Promise.reject(new Error("synthetic mutation failure"));
-    },
-    { code: "SYNTHETIC" },
-    () => {
-      successCalls += 1;
-    },
-    (error) => {
-      errorCalls += 1;
-      assert.match(error.message, /synthetic mutation failure/);
-    },
+  const form = new ClaimForm(
+    baseClaimProps({
+      save: () => {
+        saveCalls += 1;
+        return Promise.reject(new Error("synthetic transport rejection"));
+      },
+    }),
   );
-  assert.strictEqual(saveCalls, 1, "failed mutation is attempted once");
-  assert.strictEqual(errorCalls, 1, "failed mutation reaches the recovery path");
-  assert.strictEqual(successCalls, 0, "failed mutation cannot report success");
+  const errors = [];
+  const originalConsoleError = console.error;
+  console.error = (...args) => errors.push(args);
+  try {
+    form._save({ code: "SYNTHETIC" });
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.strictEqual(saveCalls, 1, "real ClaimForm._save attempts a rejected mutation once");
+  assert.strictEqual(errors.length, 1, "rejected mutation reports one error");
+  assert.match(String(errors[0][0]), /Failed to save claim/);
+  assert.strictEqual(form.state.lockNew, false, "rejected create unlocks the real form");
+  assert.strictEqual(form.state.isSaved, false, "rejected create clears the real saved flag");
+
+  let successCalls = 0;
+  const successful = new ClaimForm(
+    baseClaimProps({ save: () => Promise.resolve("created") }),
+  );
+  successful.props.save = () => {
+    successCalls += 1;
+    return Promise.resolve("created");
+  };
+  successful._save({ code: "SUCCESS" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(successCalls, 1, "successful real ClaimForm._save calls transport once");
+  assert.strictEqual(successful.state.lockNew, true, "successful save keeps existing lock semantics");
+  assert.strictEqual(successful.state.isSaved, true, "successful save keeps existing saved semantics");
 }
 
-function testNegativeControls() {
-  const claimFormSource = fs.readFileSync(path.join(__dirname, "../src/components/ClaimForm.js"), "utf8");
-  assert.ok(!claimFormSource.includes("!rights.filter((r) => r === RIGHT_CLAIMREVIEW).length"), "old unconditional reviewer gate is absent");
-  assert.ok(claimFormSource.includes("isClaimFormReadOnly"), "ClaimForm uses the mode-aware predicate");
-  assert.ok(claimFormSource.includes("recoverClaimFormAfterSaveError"), "ClaimForm uses bounded save-error recovery");
-  assert.ok(!claimFormSource.includes("createClaim"), "ClaimForm does not call a guessed mutation directly");
+async function testRealEditPageSave() {
+  const EditPage = loadClass(path.join(repoRoot, "src/pages/EditPage.js"), "EditPage");
+  const createResult = Promise.resolve({ created: true });
+  const updateResult = Promise.resolve({ updated: true });
+  const calls = [];
+  const page = new EditPage({
+    modulesManager: makeModuleManager(),
+    history: {},
+    intl: {},
+    createClaim: (...args) => {
+      calls.push(["create", args[1]]);
+      return createResult;
+    },
+    updateClaim: (...args) => {
+      calls.push(["update", args[1]]);
+      return updateResult;
+    },
+  });
+  assert.deepStrictEqual(await page.save({ code: "NEW" }), { created: true }, "EditPage.save returns create result");
+  assert.deepStrictEqual(await page.save({ uuid: "existing", code: "OLD" }), { updated: true }, "EditPage.save returns update result");
+  assert.deepStrictEqual(calls.map(([kind]) => kind), ["create", "update"]);
+
+  const rejection = Promise.reject(new Error("mutation rejected"));
+  rejection.catch(() => {});
+  const rejectingPage = new EditPage({
+    modulesManager: makeModuleManager(),
+    history: {},
+    intl: {},
+    createClaim: () => rejection,
+    updateClaim: () => rejection,
+  });
+  await assert.rejects(() => rejectingPage.save({ code: "REJECTED" }), /mutation rejected/);
+  await assert.rejects(() => rejectingPage.save({ uuid: "existing", code: "REJECTED" }), /mutation rejected/);
+}
+
+function loadBaselineClass(relativePath, className) {
+  const source = childProcess.execFileSync("git", ["show", `${BASELINE}:${relativePath}`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  return loadClass(path.join(repoRoot, relativePath), className, { source });
+}
+
+async function testBaselineNegativeControls() {
+  const BaselineClaimForm = loadBaselineClass("src/components/ClaimForm.js", "ClaimForm");
+  const baselineForm = new BaselineClaimForm(baseClaimProps({ rights: [RIGHT_ADD] }));
+  const baselineEntry = findElement(baselineForm.render(), "Form");
+  assert.strictEqual(baselineEntry.props.readOnly, true, "baseline negative control reproduces reviewer-gated entry block");
+
+  const BaselineEditPage = loadBaselineClass("src/pages/EditPage.js", "EditPage");
+  const action = Promise.reject(new Error("baseline mutation rejected"));
+  action.catch(() => {});
+  const baselinePage = new BaselineEditPage({
+    modulesManager: makeModuleManager(),
+    history: {},
+    intl: {},
+    createClaim: () => action,
+    updateClaim: () => action,
+  });
+  const baselineResult = await baselinePage.save({ code: "BASELINE" });
+  assert.strictEqual(baselineResult, undefined, "baseline EditPage.save does not bubble mutation promise");
 }
 
 (async () => {
   testPermissionMatrix();
-  await testMockedComponentSaveRecovery();
-  testNegativeControls();
-  console.log("claimForm tests: PASS (permission matrix, mocked component recovery, negative controls)");
+  testRealClaimFormRender();
+  await testRealClaimFormSaveRecovery();
+  await testRealEditPageSave();
+  await testBaselineNegativeControls();
+  console.log("claimForm tests: PASS (real Babel ClaimForm/EditPage, permission matrix, save recovery, baseline controls)");
 })().catch((error) => {
   console.error(error.stack || error);
   process.exitCode = 1;
