@@ -28,7 +28,7 @@ class EditPage extends Component {
 
   save = async (claim) => {
     if (!claim.uuid) {
-      this.props.createClaim(
+      return this.props.createClaim(
         this.props.modulesManager,
         claim,
         formatMessageWithValues(this.props.intl, "claim", "CreateClaim.mutationLabel", {
@@ -36,7 +36,7 @@ class EditPage extends Component {
         }),
       );
     } else {
-      this.props.updateClaim(
+      return this.props.updateClaim(
         this.props.modulesManager,
         claim,
         formatMessageWithValues(this.props.intl, "claim", "UpdateClaim.mutationLabel", { code: claim.code }),

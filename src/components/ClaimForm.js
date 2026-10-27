@@ -40,13 +40,13 @@ import {
   STORAGE_KEY_ADMIN,
   STORAGE_KEY_CLAIM_HEALTH_FACILITY,
   DEFAULT,
-  RIGHT_CLAIMREVIEW,
   REFERRAL,
   SERVICE_TYPE_PP_S,
 } from "../constants";
 import ClaimMasterPanel from "./ClaimMasterPanel";
 import ClaimChildPanel from "./ClaimChildPanel";
 import ClaimFeedbackPanel from "./ClaimFeedbackPanel";
+import { isClaimFormReadOnly, recoverClaimFormAfterSaveError, saveClaimWithRecovery } from "./claimFormPermissions";
 
 const CLAIM_FORM_CONTRIBUTION_KEY = "claim.ClaimForm";
 
@@ -387,9 +387,10 @@ class ClaimForm extends Component {
       return;
     }
     this.setState({ lockNew: true, isSaved: true }, () => {
-      this.props
-        .save(claim)
-        .then(() => {
+      saveClaimWithRecovery(
+        this.props.save,
+        claim,
+        () => {
           if (this.autoGenerateClaimCode && !this.state.isRestored) {
             const {
               mutation: { clientMutationId },
@@ -410,10 +411,12 @@ class ClaimForm extends Component {
                 });
             }
           }
-        })
-        .catch((error) => {
+        },
+        (error) => {
           console.error("[ERROR]: Failed to save claim", error);
-        });
+          this.setState((state) => recoverClaimFormAfterSaveError(state));
+        },
+      );
     });
   };
 
@@ -480,13 +483,15 @@ class ClaimForm extends Component {
       return;
     };
 
-    let readOnly =
-      lockNew ||
-      isSaved ||
-      (!forReview && !forFeedback && claim.status !== 2) ||
-      (forReview && (claim.reviewStatus >= 8 || claim.status !== 4)) ||
-      (forFeedback && claim.status !== 4) ||
-      !rights.filter((r) => r === RIGHT_CLAIMREVIEW).length;
+    const readOnly = isClaimFormReadOnly({
+      rights,
+      forReview,
+      forFeedback,
+      claim,
+      claimUuid: claim_uuid,
+      lockNew,
+      isSaved,
+    });
 
     var actions = [];
     if (!!claim_uuid) {

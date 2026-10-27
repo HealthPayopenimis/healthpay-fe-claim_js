@@ -14,6 +14,7 @@
     "build": "rollup -c",
     "start": "rollup -c -w",
     "format": "prettier src -w",
+    "test:claim-form": "node test/claimForm.test.js",
     "prepare":"npm run build"
   },
   "peerDependencies": {
