@@ -311,6 +311,7 @@ function handleReferHFType(modulesManager, claim) {
 export function createClaim(mm, claim, clientMutationLabel) {
   const shouldAutogenerate = mm.getConf("fe-claim", "claimForm.autoGenerateClaimCode", DEFAULT.AUTOGENERATE_CLAIM_CODE);
   const mutation = formatMutation("createClaim", formatClaimGQL(mm, claim, shouldAutogenerate), clientMutationLabel);
+  claim.clientMutationId = mutation.clientMutationId;
   var requestedDateTime = new Date();
   return graphql(mutation.payload, ["CLAIM_MUTATION_REQ", "CLAIM_CREATE_CLAIM_RESP", "CLAIM_MUTATION_ERR"], {
     clientMutationId: mutation.clientMutationId,

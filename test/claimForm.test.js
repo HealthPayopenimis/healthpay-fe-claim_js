@@ -3,6 +3,8 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const childProcess = require("child_process");
+const { createStore, applyMiddleware } = require("redux");
+const { RSAA, apiMiddleware } = require("redux-api-middleware");
 
 const TOOLCHAIN = "/home/ubuntu/healthpay-v3-execution/module-toolchain/node_modules";
 const MODULE_PATHS = [TOOLCHAIN, path.join(__dirname, "../node_modules")];
@@ -95,6 +97,16 @@ function makeCore() {
     parseData: () => [],
     coreAlert: () => {},
     historyPush: (_mm, history, route) => history?.push?.(route),
+    dispatchMutationReq: (state, action) => ({ ...state, submittingMutation: true, mutation: action.meta }),
+    dispatchMutationResp: (state, service, action) => ({
+      ...state,
+      submittingMutation: false,
+      mutation: { ...state.mutation, id: action.payload.data[service].internalId },
+    }),
+    dispatchMutationErr: (state, action) => ({ ...state, alert: JSON.stringify(action.payload) }),
+    formatServerError: (payload) => payload,
+    formatGraphQLError: () => null,
+    pageInfo: () => ({}),
   };
   return core;
 }
@@ -358,6 +370,103 @@ async function testRealClaimFormSaveRecovery() {
   assert.strictEqual(successful.state.isSaved, true, "successful save keeps existing saved semantics");
 }
 
+function transportFailureAction(clientMutationId) {
+  return {
+    [RSAA]: {
+      endpoint: "https://claims.invalid/api/graphql",
+      method: "POST",
+      body: "{}",
+      fetch: () => Promise.reject(new Error("simulated network failure")),
+      types: [
+        { type: "CLAIM_MUTATION_REQ", meta: { clientMutationId } },
+        { type: "CLAIM_CREATE_CLAIM_RESP", meta: { clientMutationId } },
+        { type: "CLAIM_MUTATION_ERR", meta: { clientMutationId } },
+      ],
+    },
+  };
+}
+
+async function testReduxTransportFailureRecovery() {
+  const reducer = loadModule(path.join(repoRoot, "src/reducer.js"), {
+    ...makeRequire(),
+  }).default;
+  const store = createStore(reducer, applyMiddleware(apiMiddleware));
+  const clientMutationId = "transport-failure-1";
+  const draft = { code: "RETRY-ME", clientMutationId, description: "preserve this draft" };
+  let journalCalls = 0;
+  let transportCalls = 0;
+  const form = new (loadClass(path.join(repoRoot, "src/components/ClaimForm.js"), "ClaimForm"))(
+    baseClaimProps({
+      submittingMutation: true,
+      mutation: { clientMutationId },
+      journalize: () => {
+        journalCalls += 1;
+      },
+      save: () => {
+        transportCalls += 1;
+        return store.dispatch(transportFailureAction(`transport-failure-${transportCalls}`));
+      },
+    }),
+  );
+  form.state.claim = draft;
+
+  const failureAction = await store.dispatch(transportFailureAction(clientMutationId));
+  const failedState = store.getState();
+  assert.strictEqual(failureAction.error, true, "real RSAA middleware returns a resolved error action");
+  assert.strictEqual(failedState.submittingMutation, false, "claim reducer completes a failed mutation");
+  assert.strictEqual(!!failedState.mutationError, true, "claim reducer exposes the failed mutation to the observer");
+
+  const previousProps = form.props;
+  form.props = {
+    ...form.props,
+    submittingMutation: failedState.submittingMutation,
+    mutation: failedState.mutation,
+    mutationError: failedState.mutationError,
+  };
+  form.componentDidUpdate(previousProps, form.state);
+  assert.strictEqual(form.state.lockNew, false, "real Redux transport failure unlocks the form");
+  assert.strictEqual(form.state.isSaved, false, "real Redux transport failure clears the saved flag");
+  assert.strictEqual(form.state.claim.clientMutationId, undefined, "failed transient mutation id is cleared");
+  assert.strictEqual(form.state.claim.code, draft.code, "failed save preserves the edited draft");
+  assert.strictEqual(form.state.claim.description, draft.description, "failed save preserves all draft fields");
+  assert.strictEqual(journalCalls, 0, "failed mutation is not journalized as a success");
+
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    form._save(form.state.claim);
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.strictEqual(transportCalls, 1, "unlocked form permits a genuine retry transport");
+  assert.strictEqual(form.state.lockNew, false, "retry failure also unlocks the form");
+  assert.strictEqual(form.state.isSaved, false, "retry failure also clears the saved flag");
+}
+
+async function testBaselineReduxTransportNegativeControl() {
+  const baselineReducer = loadModule(path.join(repoRoot, "src/reducer.js"), {
+    ...makeRequire(),
+  }, [], childProcess.execFileSync("git", ["show", `${BASELINE}:src/reducer.js`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })).default;
+  const store = createStore(baselineReducer, applyMiddleware(apiMiddleware));
+  const form = new (loadBaselineClass("src/components/ClaimForm.js", "ClaimForm"))(
+    baseClaimProps({ submittingMutation: true, mutation: { clientMutationId: "baseline-failure" } }),
+  );
+  form.state.claim = { code: "BASELINE-LOCK", clientMutationId: "baseline-failure" };
+  form.state.lockNew = true;
+  form.state.isSaved = true;
+  const previousProps = form.props;
+  await store.dispatch(transportFailureAction("baseline-failure"));
+  const failedState = store.getState();
+  form.props = { ...form.props, submittingMutation: failedState.submittingMutation, mutation: failedState.mutation };
+  form.componentDidUpdate(previousProps, form.state);
+  assert.strictEqual(form.state.lockNew, true, "baseline negative control reproduces the stuck lock after Redux transport failure");
+  assert.strictEqual(form.state.isSaved, true, "baseline negative control reproduces the stuck saved state");
+}
+
 async function testRealEditPageSave() {
   const EditPage = loadClass(path.join(repoRoot, "src/pages/EditPage.js"), "EditPage");
   const createResult = Promise.resolve({ created: true });
@@ -425,9 +534,11 @@ async function testBaselineNegativeControls() {
   testPermissionMatrix();
   testRealClaimFormRender();
   await testRealClaimFormSaveRecovery();
+  await testReduxTransportFailureRecovery();
+  await testBaselineReduxTransportNegativeControl();
   await testRealEditPageSave();
   await testBaselineNegativeControls();
-  console.log("claimForm tests: PASS (real Babel ClaimForm/EditPage, permission matrix, save recovery, baseline controls)");
+  console.log("claimForm tests: PASS (real ClaimForm/EditPage, Redux transport failure recovery, permission matrix, baseline controls)");
 })().catch((error) => {
   console.error(error.stack || error);
   process.exitCode = 1;

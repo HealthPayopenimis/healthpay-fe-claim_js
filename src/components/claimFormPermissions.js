@@ -34,12 +34,18 @@ export function isClaimFormReadOnly({
 }
 
 export function recoverClaimFormAfterSaveError(state) {
-  return { ...state, lockNew: false, isSaved: false };
+  const claim = { ...(state.claim || {}) };
+  delete claim.clientMutationId;
+  return { ...state, claim, lockNew: false, isSaved: false };
 }
 
 export function saveClaimWithRecovery(save, claim, onSaved, onError) {
   return Promise.resolve()
     .then(() => save(claim))
+    .then((result) => {
+      if (result?.error) return Promise.reject(result.payload || result);
+      return result;
+    })
     .then(onSaved)
     .catch((error) => onError(error));
 }

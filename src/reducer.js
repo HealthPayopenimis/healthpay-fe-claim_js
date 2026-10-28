@@ -2,7 +2,6 @@ import {
   parseData,
   dispatchMutationReq,
   dispatchMutationResp,
-  dispatchMutationErr,
   pageInfo,
   formatServerError,
   formatGraphQLError,
@@ -43,6 +42,7 @@ function reducer(
     errorSameDiagnosisClaim: null,
     submittingMutation: false,
     mutation: {},
+    mutationError: null,
     fetchingClaimCodeCount: false,
     fetchedClaimCodeCount: false,
     claimCodeCount: null,
@@ -382,13 +382,19 @@ function reducer(
         },
       };
     case "CLAIM_MUTATION_REQ":
-      return dispatchMutationReq(state, action);
+      return { ...dispatchMutationReq(state, action), mutationError: null };
     case "CLAIM_MUTATION_ERR":
-      return dispatchMutationErr(state, action);
+      return {
+        ...state,
+        submittingMutation: false,
+        mutation: { ...(action.meta || state.mutation || {}), error: true },
+        mutationError: action.payload,
+        alert: JSON.stringify(action.payload),
+      };
     case "CLAIM_CREATE_CLAIM_RESP":
-      return dispatchMutationResp(state, "createClaim", action);
+      return { ...dispatchMutationResp(state, "createClaim", action), mutationError: null };
     case "CLAIM_UPDATE_CLAIM_RESP":
-      return dispatchMutationResp(state, "updateClaim", action);
+      return { ...dispatchMutationResp(state, "updateClaim", action), mutationError: null };
     case "CLAIM_SUBMIT_CLAIMS_RESP":
       return dispatchMutationResp(state, "submitClaims", action);
     case "CLAIM_DELETE_CLAIMS_RESP":

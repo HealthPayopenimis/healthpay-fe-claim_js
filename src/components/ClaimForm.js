@@ -244,7 +244,18 @@ class ClaimForm extends Component {
   }
 
   componentDidUpdate(prevProps, prevState, snapshot) {
-    if (prevProps.fetchedClaim !== this.props.fetchedClaim && !!this.props.fetchedClaim) {
+    if (prevProps.submittingMutation && !this.props.submittingMutation) {
+      const isFailedEditedClaimMutation =
+        !!this.props.mutationError &&
+        !!this.props.mutation?.clientMutationId &&
+        this.props.mutation.clientMutationId === this.state.claim?.clientMutationId;
+      if (isFailedEditedClaimMutation) {
+        this.setState((state) => recoverClaimFormAfterSaveError(state));
+      } else if (!this.props.mutationError) {
+        this.props.journalize(this.props.mutation);
+        this.setState({ reset: this.state.reset + 1 });
+      }
+    } else if (prevProps.fetchedClaim !== this.props.fetchedClaim && !!this.props.fetchedClaim) {
       var claim = this.props.claim;
       claim.jsonExt = !!claim.jsonExt ? JSON.parse(claim.jsonExt) : {};
       this.setState(
@@ -276,9 +287,6 @@ class ClaimForm extends Component {
       this.setState({ claim: this._restoreClaim(this.state.claim), newClaim: true, lockNew: false, claim_uuid: null });
     } else if (prevProps.claim_uuid && !this.props.claim_uuid) {
       this.setState({ claim: this._newClaim(), newClaim: true, lockNew: false, claim_uuid: null });
-    } else if (prevProps.submittingMutation && !this.props.submittingMutation) {
-      this.props.journalize(this.props.mutation);
-      this.setState({ reset: this.state.reset + 1 });
     } else if (!prevProps.generating && !!this.props.generating) {
       this.props.generate(this.state.printParam);
     }
@@ -716,6 +724,7 @@ const mapStateToProps = (state, props) => ({
   errorClaim: state.claim.errorClaim,
   submittingMutation: state.claim.submittingMutation,
   mutation: state.claim.mutation,
+  mutationError: state.claim.mutationError,
   claimAdmin: state.claim.claimAdmin,
   claimHealthFacility: state.claim.claimHealthFacility,
   currentClaimAdmin: state.claim.currentClaimAdmin,
