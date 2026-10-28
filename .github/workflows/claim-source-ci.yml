@@ -20,6 +20,6 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts --legacy-peer-deps
       - name: Run claim component tests
-        run: npm run test:claim-form
+        run: npm test
       - name: Build package
         run: npm run build

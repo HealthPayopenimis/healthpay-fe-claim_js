@@ -24,6 +24,7 @@ import FeedbackStatusPicker from "./pickers/FeedbackStatusPicker";
 import ClaimMasterPanelExt from "./components/ClaimMasterPanelExt";
 import AttachmentsDialog from "./components/AttachmentsDialog";
 import messages_en from "./translations/en.json";
+import messages_ar from "./translations/ar.json";
 import reducer from "./reducer";
 import { decodeId } from "@openimis/fe-core";
 import ClaimPercentageReferralsReport from "./reports/ClaimPercentageReferralsReport";
@@ -42,7 +43,10 @@ const ROUTE_CLAIM_REVIEW = "claim/reviews/review";
 const ROUTE_CLAIM_FEEDBACK = "claim/feedback";
 
 const DEFAULT_CONFIG = {
-  "translations": [{ key: "en", messages: messages_en }],
+  "translations": [
+    { key: "en", messages: messages_en },
+    { key: "ar", messages: messages_ar },
+  ],
   "reducers": [{ key: "claim", reducer }],
   "reports": [
     {

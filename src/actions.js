@@ -27,6 +27,12 @@ export function setCurrentClaimAdmin(admin) {
   };
 }
 
+export function retryClaimContext() {
+  return (dispatch) => {
+    dispatch({ type: "CLAIM_CLAIM_CONTEXT_RETRY" });
+  };
+}
+
 export function selectHealthFacility(hf) {
   return (dispatch) => {
     dispatch({ type: "CLAIM_CLAIM_HEALTH_FACILITY_SELECTED", payload: hf });

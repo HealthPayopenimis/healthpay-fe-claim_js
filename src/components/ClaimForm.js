@@ -46,7 +46,9 @@ import {
 import ClaimMasterPanel from "./ClaimMasterPanel";
 import ClaimChildPanel from "./ClaimChildPanel";
 import ClaimFeedbackPanel from "./ClaimFeedbackPanel";
+import ClaimAdminPicker from "../pickers/ClaimAdminPicker";
 import { isClaimFormReadOnly, recoverClaimFormAfterSaveError, saveClaimWithRecovery } from "./claimFormPermissions";
+import { getClaimContextReadiness, CLAIM_CONTEXT_READY } from "./claimContextReadiness";
 
 const CLAIM_FORM_CONTRIBUTION_KEY = "claim.ClaimForm";
 
@@ -136,9 +138,9 @@ class ClaimForm extends Component {
     claim.healthFacility =
       this?.state?.claim?.healthFacility ??
       this.props.claimHealthFacility ??
-      JSON.parse(localStorage.getItem(STORAGE_KEY_CLAIM_HEALTH_FACILITY));
-    claim.admin =
-      this?.state?.claim?.admin ?? this.props.claimAdmin ?? JSON.parse(localStorage.getItem(STORAGE_KEY_ADMIN));
+      this.props.currentUserHF ??
+      null;
+    claim.admin = this?.state?.claim?.admin ?? this.props.claimAdmin ?? this.props.currentClaimAdmin ?? null;
     claim.status = this.props.modulesManager.getConf("fe-claim", "newClaim.status", 2);
     claim.dateClaimed = toISODate(moment().toDate());
     claim.dateFrom = toISODate(moment().toDate());
@@ -203,6 +205,39 @@ class ClaimForm extends Component {
     }
   }
 
+  syncFreshClaimContext(prevProps) {
+    if (this.state.claim_uuid || !this.state.newClaim || this.state.lockNew || this.state.isSaved) return;
+
+    const nextFacility = this.props.currentUserHF || this.props.claimHealthFacility || null;
+    const nextAdmin = this.props.currentClaimAdmin || this.props.claimAdmin || null;
+    const context = getClaimContextReadiness({
+      facility: nextFacility,
+      admin: nextAdmin,
+      username: this.props.currentUsername,
+      fetchingFacility: this.props.fetchingUserHF,
+      fetchedFacility: this.props.fetchedUserHF,
+      facilityError: this.props.errorUserHF,
+      claimAdminContext: this.props.claimAdminContext,
+    });
+    if (context.status !== CLAIM_CONTEXT_READY) return;
+    const facilityChanged = nextFacility?.uuid !== this.state.claim?.healthFacility?.uuid;
+    const adminChanged = nextAdmin?.uuid !== this.state.claim?.admin?.uuid;
+    const facilityPropsChanged =
+      prevProps.claimHealthFacility !== this.props.claimHealthFacility || prevProps.currentUserHF !== this.props.currentUserHF;
+    const adminPropsChanged =
+      prevProps.claimAdmin !== this.props.claimAdmin || prevProps.currentClaimAdmin !== this.props.currentClaimAdmin;
+
+    if ((facilityPropsChanged && facilityChanged) || (adminPropsChanged && adminChanged)) {
+      this.setState((state) => ({
+        claim: {
+          ...state.claim,
+          ...(facilityChanged ? { healthFacility: nextFacility } : {}),
+          ...(adminChanged ? { admin: nextAdmin } : {}),
+        },
+      }));
+    }
+  }
+
   componentWillUnmount() {
     localStorage.removeItem(STORAGE_KEY_CLAIM_HEALTH_FACILITY);
     localStorage.removeItem(STORAGE_KEY_ADMIN);
@@ -216,6 +251,20 @@ class ClaimForm extends Component {
         { claim, claim_uuid: claim.uuid, lockNew: false, newClaim: false },
         this.props.claimHealthFacilitySet(this.props.claim.healthFacility),
       );
+    } else if (!this.props.claim_uuid && !this.state.claim_uuid) {
+      this.syncFreshClaimContext(prevProps);
+      if (prevProps.claim_uuid && this.state.isDuplicate) {
+        this.setState({
+          claim: this._duplicateClaim(this.state.claim),
+          newClaim: true,
+          lockNew: false,
+          claim_uuid: null,
+        });
+      } else if (prevProps.claim_uuid && this.state.isRestored) {
+        this.setState({ claim: this._restoreClaim(this.state.claim), newClaim: true, lockNew: false, claim_uuid: null });
+      } else if (prevProps.claim_uuid) {
+        this.setState({ claim: this._newClaim(), newClaim: true, lockNew: false, claim_uuid: null });
+      }
     } else if (prevProps.claim_uuid && !this.props.claim_uuid && this.state.isDuplicate) {
       this.setState({
         claim: this._duplicateClaim(this.state.claim),
@@ -478,6 +527,16 @@ class ClaimForm extends Component {
       classes,
     } = this.props;
     const { claim, claim_uuid, lockNew, isSaved, historyOpen } = this.state;
+    const contextReadiness = getClaimContextReadiness({
+      facility: this.props.currentUserHF || this.props.claimHealthFacility,
+      admin: this.props.currentClaimAdmin || this.props.claimAdmin,
+      username: this.props.currentUsername,
+      fetchingFacility: this.props.fetchingUserHF,
+      fetchedFacility: this.props.fetchedUserHF,
+      facilityError: this.props.errorUserHF,
+      claimAdminContext: this.props.claimAdminContext,
+    });
+    const freshContextReady = !!claim_uuid || contextReadiness.status === CLAIM_CONTEXT_READY;
 
     const handleViewVersion = (version) => {
       return;
@@ -595,7 +654,7 @@ class ClaimForm extends Component {
             })}
           />
           <ProgressOrError progress={fetchingClaim} error={errorClaim} />
-          {(!!fetchedClaim || !claim_uuid) && (
+          {(!!fetchedClaim || (!claim_uuid && freshContextReady)) && (
             <Fragment>
               <PublishedComponent
                 pubRef="claim.AttachmentsDialog"
@@ -617,6 +676,13 @@ class ClaimForm extends Component {
               <Contributions contributionKey={CLAIM_FORM_CONTRIBUTION_KEY} {...editingProps} />
             </Fragment>
           )}
+          {!claim_uuid && !freshContextReady && (
+            <div>
+              <ClaimAdminPicker value={this.props.currentClaimAdmin || this.props.claimAdmin} readOnly required onChange={() => {}} />
+              <div>{formatMessage(this.props.intl, "claim", `newClaim.context.${contextReadiness.status}`)}</div>
+              {!!back && <Button onClick={back}>{formatMessage(this.props.intl, "claim", "newClaim.context.back")}</Button>}
+            </div>
+          )}
         </div>
         <div>
           <ClaimHistoryPanel
@@ -633,6 +699,11 @@ class ClaimForm extends Component {
 const mapStateToProps = (state, props) => ({
   rights: !!state.core && !!state.core.user && !!state.core.user.i_user ? state.core.user.i_user.rights : [],
   userHealthFacilityFullPath: !!state.loc ? state.loc.userHealthFacilityFullPath : null,
+  currentUserHF: !!state.loc ? state.loc.userHealthFacilityFullPath : null,
+  currentUsername: state.core?.user?.username,
+  fetchingUserHF: !!state.loc && state.loc.fetchingHealthFacilityFullPath,
+  fetchedUserHF: !!state.loc && state.loc.fetchedHealthFacilityFullPath,
+  errorUserHF: !!state.loc ? state.loc.errorHealthFacilityFullPath : null,
   claim: state.claim.claim,
   fetchingClaim: state.claim.fetchingClaim,
   fetchedClaim: state.claim.fetchedClaim,
@@ -641,6 +712,8 @@ const mapStateToProps = (state, props) => ({
   mutation: state.claim.mutation,
   claimAdmin: state.claim.claimAdmin,
   claimHealthFacility: state.claim.claimHealthFacility,
+  currentClaimAdmin: state.claim.currentClaimAdmin,
+  claimAdminContext: state.claim.claimAdminContext,
   generating: state.claim.generating,
   isClaimCodeValid: state.claim.validationFields?.claimCode?.isValid,
 });

@@ -1,0 +1,8 @@
+{
+  "claim.newClaim.context.ready": "إنشاء مطالبة جديدة",
+  "claim.newClaim.context.loading": "جارٍ تحميل المنشأة الصحية ومسؤول المطالبة…",
+  "claim.newClaim.context.missing": "المنشأة الصحية ومسؤول المطالبة غير جاهزين بعد",
+  "claim.newClaim.context.error": "تعذر تحميل المنشأة الصحية أو مسؤول المطالبة",
+  "claim.newClaim.context.retry": "إعادة المحاولة",
+  "claim.newClaim.context.back": "العودة إلى قائمة المطالبات"
+}

@@ -2,7 +2,7 @@ import React, { Component } from "react";
 import { bindActionCreators } from "redux";
 import { connect } from "react-redux";
 import { injectIntl } from "react-intl";
-import { Fab, Tooltip } from "@material-ui/core";
+import { Fab, Tooltip, Button } from "@material-ui/core";
 import { withTheme, withStyles } from "@material-ui/core/styles";
 import _ from "lodash";
 import AddIcon from "@material-ui/icons/Add";
@@ -18,8 +18,14 @@ import {
   clearCurrentPaginationPage,
 } from "@openimis/fe-core";
 import ClaimSearcher from "../components/ClaimSearcher";
-import { submit, del, selectHealthFacility, submitAll, selectClaimAdmin } from "../actions";
+import { submit, del, selectHealthFacility, submitAll, selectClaimAdmin, retryClaimContext } from "../actions";
 import { RIGHT_ADD, RIGHT_LOAD, RIGHT_SUBMIT, RIGHT_DELETE, MODULE_NAME } from "../constants";
+import {
+  CLAIM_CONTEXT_READY,
+  CLAIM_CONTEXT_LOADING,
+  CLAIM_CONTEXT_ERROR,
+  getClaimContextReadiness,
+} from "../components/claimContextReadiness";
 
 const CLAIM_HF_FILTER_CONTRIBUTION_KEY = "claim.HealthFacilitiesFilter";
 const CLAIM_SEARCHER_ACTION_CONTRIBUTION_KEY = "claim.SelectionAction";
@@ -130,13 +136,31 @@ class HealthFacilitiesPage extends Component {
   };
 
   onAdd = () => {
+    const readiness = this.getContextReadiness();
+    if (readiness.status !== CLAIM_CONTEXT_READY) return false;
     this.props.selectClaimAdmin(this.props.currentClaimAdmin);
     this.props.selectHealthFacility(this.props.currentUserHF);
     historyPush(this.props.modulesManager, this.props.history, "claim.route.claimEdit");
+    return true;
   };
 
+  getContextReadiness = () =>
+    getClaimContextReadiness({
+      facility: this.props.currentUserHF,
+      admin: this.props.currentClaimAdmin,
+      username: this.props.currentUsername,
+      fetchingFacility: this.props.fetchingUserHF,
+      fetchedFacility: this.props.fetchedUserHF,
+      facilityError: this.props.errorUserHF,
+      claimAdminContext: this.props.claimAdminContext,
+    });
+
   canAdd = () => {
-    return true;
+    return this.getContextReadiness().status === CLAIM_CONTEXT_READY;
+  };
+
+  retryContext = () => {
+    if (this.props.retryClaimContext) this.props.retryClaimContext();
   };
 
   componentDidMount = () => {
@@ -155,6 +179,14 @@ class HealthFacilitiesPage extends Component {
 
   render() {
     const { intl, classes, rights, generatingPrint } = this.props;
+    const contextReadiness = this.getContextReadiness();
+    const addLabel = formatMessage(
+      intl,
+      "claim",
+      contextReadiness.status === CLAIM_CONTEXT_READY
+        ? "newClaim.tooltip"
+        : `newClaim.context.${contextReadiness.status}`,
+    );
     if (!rights.filter((r) => r >= RIGHT_ADD && r <= RIGHT_SUBMIT).length) return null;
     let actions = [];
     if (rights.includes(RIGHT_SUBMIT)) {
@@ -185,19 +217,36 @@ class HealthFacilitiesPage extends Component {
           actionsContributionKey={CLAIM_SEARCHER_ACTION_CONTRIBUTION_KEY}
         />
         {!generatingPrint && rights.includes(RIGHT_ADD) && (
+          <>
           <Tooltip
             title={
-              !this.canAdd()
-                ? formatMessage(intl, "claim", "newClaim.adminAndHFRequired")
+              contextReadiness.status !== CLAIM_CONTEXT_READY
+                ? formatMessage(intl, "claim", `newClaim.context.${contextReadiness.status}`)
                 : formatMessage(intl, "claim", "newClaim.tooltip")
             }
           >
             <div className={classes.fab}>
-              <Fab color="primary" disabled={!this.canAdd()} onClick={this.onAdd}>
+              <Fab
+                color="primary"
+                aria-label={addLabel}
+                aria-busy={contextReadiness.status === CLAIM_CONTEXT_LOADING ? "true" : undefined}
+                disabled={!this.canAdd()}
+                onClick={this.onAdd}
+              >
                 <AddIcon />
               </Fab>
             </div>
           </Tooltip>
+          {contextReadiness.status === CLAIM_CONTEXT_LOADING && (
+            <div>{formatMessage(intl, "claim", "newClaim.context.loading")}</div>
+          )}
+          {contextReadiness.status === CLAIM_CONTEXT_ERROR && (
+            <div>
+              <span>{formatMessage(intl, "claim", "newClaim.context.error")}</span>
+              <Button onClick={this.retryContext}>{formatMessage(intl, "claim", "newClaim.context.retry")}</Button>
+            </div>
+          )}
+          </>
         )}
       </div>
     );
@@ -208,9 +257,14 @@ const mapStateToProps = (state) => ({
   state,
   currentClaimAdmin: state.claim.currentClaimAdmin,
   currentUserHF: state.loc?.userHealthFacilityFullPath,
+  currentUsername: state.core?.user?.username,
+  fetchingUserHF: state.loc?.fetchingHealthFacilityFullPath,
+  fetchedUserHF: state.loc?.fetchedHealthFacilityFullPath,
+  errorUserHF: state.loc?.errorHealthFacilityFullPath,
   rights: !!state.core && !!state.core.user && !!state.core.user.i_user ? state.core.user.i_user.rights : [],
   claimAdmin: state.claim.claimAdmin,
   claimHealthFacility: state.claim.claimHealthFacility,
+  claimAdminContext: state.claim.claimAdminContext,
   userHealthFacilityFullPath: !!state.loc ? state.loc.userHealthFacilityFullPath : null,
   submittingMutation: state.claim.submittingMutation,
   mutation: state.claim.mutation,
@@ -231,6 +285,7 @@ const mapDispatchToProps = (dispatch) => {
       submitAll,
       del,
       clearCurrentPaginationPage,
+      retryClaimContext,
     },
     dispatch,
   );

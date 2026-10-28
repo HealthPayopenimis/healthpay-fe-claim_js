@@ -63,7 +63,15 @@ function makeReact() {
     type,
     props: { ...(props || {}), ...(children.length ? { children } : {}) },
   });
-  return { Component, Fragment: "Fragment", createElement, useState: () => [null, () => {}] };
+  return {
+    Component,
+    Fragment: "Fragment",
+    createElement,
+    useState: () => [null, () => {}],
+    useMemo: (factory) => factory(),
+    useRef: (current) => ({ current }),
+    useEffect: () => {},
+  };
 }
 
 function identity(value) {
@@ -86,7 +94,7 @@ function makeCore() {
     fetchMutation: () => Promise.resolve({}),
     parseData: () => [],
     coreAlert: () => {},
-    historyPush: () => {},
+    historyPush: (_mm, history, route) => history?.push?.(route),
   };
   return core;
 }
@@ -106,6 +114,13 @@ function makeRequire({ baseline = false } = {}) {
   const core = makeCore();
   const actions = {
     claimHealthFacilitySet: () => {},
+    selectClaimAdmin: () => {},
+    selectHealthFacility: () => {},
+    retryClaimContext: () => {},
+    submit: () => {},
+    submitAll: () => {},
+    del: () => {},
+    clearCurrentPaginationPage: () => {},
     fetchClaim: () => {},
     generate: () => {},
     print: () => {},
@@ -127,9 +142,18 @@ function makeRequire({ baseline = false } = {}) {
         transformOptions: { includeHelper: true },
       });
     }
+    if (request === "./claimContextReadiness" || request === "../components/claimContextReadiness") {
+      return loadModule(path.join(repoRoot, "src/components/claimContextReadiness.js"));
+    }
     if (request.startsWith("./") || request.startsWith("../")) return components;
     if (request.startsWith("@material-ui")) {
-      if (request === "@material-ui/core") return { Fab: "Fab", Badge: "Badge", Button: "Button", Grid: "Grid" };
+      if (request === "@material-ui/core") return {
+        Fab: "Fab",
+        Badge: "Badge",
+        Button: "Button",
+        Grid: "Grid",
+        Tooltip: "Tooltip",
+      };
       if (request === "@material-ui/core/styles") return { withStyles: () => identity, withTheme: identity };
       return { default: "Icon" };
     }
@@ -183,6 +207,8 @@ function loadClass(filename, className, options = {}) {
 }
 
 function baseClaimProps(overrides = {}) {
+  const facility = { uuid: "hf-1", code: "HF1", name: "Facility 1" };
+  const admin = { uuid: "admin-1", code: "user-1", healthFacility: facility };
   return {
     modulesManager: makeModuleManager(),
     rights: [RIGHT_ADD],
@@ -202,6 +228,14 @@ function baseClaimProps(overrides = {}) {
     save: () => Promise.resolve("saved"),
     back: () => {},
     isClaimCodeValid: true,
+    claimHealthFacility: facility,
+    currentUserHF: facility,
+    claimAdmin: admin,
+    currentClaimAdmin: admin,
+    fetchingUserHF: false,
+    fetchedUserHF: true,
+    errorUserHF: null,
+    claimAdminContext: { isLoading: false, fetched: true, error: null, retry: 0 },
     ...overrides,
   };
 }

@@ -11,6 +11,15 @@ import {
 function reducer(
   state = {
     currentClaimAdmin: null,
+    claimAdminContext: {
+      isLoading: false,
+      fetched: false,
+      error: null,
+      retry: 0,
+      scopeUuid: null,
+      username: null,
+      adminUuid: null,
+    },
     fetchingClaimAttachments: false,
     fetchedClaimAttachments: false,
     errorClaimAttachments: null,
@@ -97,6 +106,26 @@ function reducer(
       s = { ...state, currentClaimAdmin };
       return s;
     }
+    case "CLAIM_CLAIM_ADMIN_CONTEXT_SET":
+      return {
+        ...state,
+        claimAdminContext: {
+          ...state.claimAdminContext,
+          ...action.payload,
+        },
+      };
+    case "CLAIM_CLAIM_CONTEXT_RETRY":
+      return {
+        ...state,
+        currentClaimAdmin: null,
+        claimAdminContext: {
+          ...state.claimAdminContext,
+          isLoading: true,
+          fetched: false,
+          error: null,
+          retry: (state.claimAdminContext?.retry || 0) + 1,
+        },
+      };
     case "CLAIM_CLAIM_HEALTH_FACILITY_SELECTED":
       var claimHealthFacility = action.payload;
       var s = { ...state, claimHealthFacility };

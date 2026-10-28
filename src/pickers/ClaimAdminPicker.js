@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useSelector, useDispatch } from "react-redux";
 
 import {
@@ -29,9 +29,8 @@ const ClaimAdminPicker = (props) => {
     region,
     district,
   } = props;
-  const userHealthFacilityId = useSelector((state) =>
-    state?.loc?.userHealthFacilityFullPath?.uuid
-  );
+  const userHealthFacilityId = useSelector((state) => state?.loc?.userHealthFacilityFullPath?.uuid);
+  const contextRetry = useSelector((state) => state?.claim?.claimAdminContext?.retry || 0);
   const i_user = useSelector((state) =>
     state?.core?.user?.username
   );
@@ -45,8 +44,8 @@ const ClaimAdminPicker = (props) => {
     DEFAULT.RENDER_LAST_NAME_FIRST,
   );
 
-  const { isLoading, data, error } = useGraphqlQuery(
-    `
+  const scopedFacilityId = userHealthFacilityId || hfFilter?.uuid;
+  const query = `
       query ClaimAdminPicker ($search: String, $hf: String, $region_uuid: String, $district_uuid: String) {
           claimAdmins(search: $search, first: 20, healthFacility_Uuid: $hf, regionUuid: $region_uuid, districtUuid: $district_uuid) {
               edges {
@@ -74,13 +73,17 @@ const ClaimAdminPicker = (props) => {
                 }
             }
         }
-        `,
+        # Context retry ${contextRetry}
+      `;
+  const { isLoading, data, error } = useGraphqlQuery(
+    query,
     {
-      hf: userHealthFacilityId || hfFilter?.uuid,
+      hf: scopedFacilityId,
       search: searchString,
       region_uuid: region?.uuid,
       district_uuid: district?.uuid
     },
+    { skip: !scopedFacilityId },
   );
 
   const dispatch = useDispatch();
@@ -89,14 +92,61 @@ const ClaimAdminPicker = (props) => {
       ? `${claimAdmin.code} ${claimAdmin.lastName} ${claimAdmin.otherNames}`
       : `${claimAdmin.code} ${claimAdmin.otherNames} ${claimAdmin.lastName}`;
   };
-  const claimAdmins = data?.claimAdmins?.edges.map((edge) => edge.node) || [];
+  const claimAdmins = useMemo(
+    () => data?.claimAdmins?.edges.map((edge) => edge.node).filter(Boolean) || [],
+    [data],
+  );
+  const scopedClaimAdmins = useMemo(
+    () => claimAdmins.filter((admin) => !scopedFacilityId || admin?.healthFacility?.uuid === scopedFacilityId),
+    [claimAdmins, scopedFacilityId],
+  );
+  const currentAdmin = useMemo(
+    () => scopedClaimAdmins.find((admin) => admin.code === i_user) || null,
+    [scopedClaimAdmins, i_user],
+  );
+  const contextSignature = [
+    scopedFacilityId || "",
+    i_user || "",
+    isLoading ? "loading" : "idle",
+    data ? "data" : "none",
+    error ? String(error) : "",
+    currentAdmin?.uuid || "",
+  ].join("|");
+  const lastContextSignature = useRef(null);
+  const lastAdminSignature = useRef(null);
 
   useEffect(() => {
-    const currentAdmin = claimAdmins.find((admin) => admin.code === i_user);
-    if (currentAdmin) {
-      dispatch(setCurrentClaimAdmin(currentAdmin));
+    if (lastContextSignature.current === contextSignature) return;
+    lastContextSignature.current = contextSignature;
+    dispatch({
+      type: "CLAIM_CLAIM_ADMIN_CONTEXT_SET",
+      payload: {
+        isLoading: !!scopedFacilityId && (isLoading || !data),
+        fetched: !!scopedFacilityId && !isLoading && !!data,
+        error: error || null,
+        scopeUuid: scopedFacilityId || null,
+        username: i_user || null,
+        adminUuid: currentAdmin?.uuid || null,
+      },
+    });
+  }, [contextSignature, currentAdmin, data, dispatch, error, i_user, isLoading, scopedFacilityId]);
+
+  useEffect(() => {
+    const adminSignature = [
+      scopedFacilityId || "",
+      i_user || "",
+      isLoading ? "loading" : "idle",
+      error ? String(error) : "",
+      currentAdmin?.uuid || "none",
+    ].join("|");
+    if (lastAdminSignature.current === adminSignature) return;
+    lastAdminSignature.current = adminSignature;
+    if (isLoading || error || !scopedFacilityId || !data) {
+      dispatch(setCurrentClaimAdmin(null));
+      return;
     }
-  }, [claimAdmins, i_user]);
+    dispatch(setCurrentClaimAdmin(currentAdmin));
+  }, [currentAdmin, data, dispatch, error, i_user, isLoading, scopedFacilityId]);
 
   return (
     <Autocomplete
@@ -108,7 +158,7 @@ const ClaimAdminPicker = (props) => {
       withLabel={withLabel}
       withPlaceholder={withPlaceholder}
       readOnly={readOnly}
-      options={claimAdmins}
+      options={scopedClaimAdmins}
       isLoading={isLoading}
       value={value}
       getOptionLabel={(option) => formatClaimAdmin(option)}
