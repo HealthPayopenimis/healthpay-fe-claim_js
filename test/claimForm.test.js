@@ -547,7 +547,7 @@ async function testExactCoreFormRecoveryLifecycle() {
 
 async function testOldClaimRecoveryLeavesExactCoreFormSaving() {
   const CoreForm = loadExactCoreFormClass();
-  const oldClaimSource = childProcess.execFileSync("git", ["show", "HEAD:src/components/ClaimForm.js"], {
+  const oldClaimSource = childProcess.execFileSync("git", ["show", "59d8afb50b7996aa32f91b4c59c97432e634be33:src/components/ClaimForm.js"], {
     cwd: repoRoot,
     encoding: "utf8",
   });
