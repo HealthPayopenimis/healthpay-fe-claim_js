@@ -425,8 +425,9 @@ function testReducerTransitions() {
 
 function runPickerHookTest() {
   const calls = [];
-  let state = { loc: { userHealthFacilityFullPath: facility("hf-1") }, core: { user: { username: "ACTOR" } }, claim: { claimAdminContext: { retry: 0 } } };
-  let query = { isLoading: true, data: null, error: null };
+  const queryCalls = [];
+  let state = { loc: { userHealthFacilityFullPath: null }, core: { user: { username: "ACTOR" } }, claim: { claimAdminContext: { retry: 0 } } };
+  let query = { isLoading: false, data: null, error: null };
   let hookStates = [];
   let hookIndex = 0;
   let effects = [];
@@ -459,7 +460,10 @@ function runPickerHookTest() {
     useModulesManager: () => ({ getConf: (_m, _k, fallback) => fallback }),
     useTranslations: () => ({ formatMessage: (key) => key }),
     Autocomplete: "Autocomplete",
-    useGraphqlQuery: () => query,
+    useGraphqlQuery: (operation, variables, config) => {
+      queryCalls.push({ operation, variables, config });
+      return query;
+    },
   });
   const pickerRequire = makeRequire({
     React,
@@ -482,12 +486,20 @@ function runPickerHookTest() {
     for (const effect of effects) previousEffectDeps[effect.index] = effect.deps;
   };
   render();
-  equal(calls.filter((call) => call.type === "CLAIM_SET_CURRENT_CLAIM_ADMIN").length, 1, "picker clears admin once while initial query is loading");
+  equal(calls.filter((call) => call.type === "CLAIM_SET_CURRENT_CLAIM_ADMIN").length, 1, "picker clears admin once while the initial query is skipped");
+  equal(queryCalls[0].config.skip, true, "picker skips the admin query until a facility scope exists");
   const initialCalls = calls.length;
   render();
   equal(calls.length, initialCalls, "stable picker rerender does not dispatch a loop");
 
   const hf1 = facility("hf-1");
+  query = { isLoading: true, data: null, error: null };
+  state = { ...state, loc: { userHealthFacilityFullPath: hf1 } };
+  render();
+  equal(queryCalls.length, 3, "facility arrival rerenders the picker query with the new scope");
+  equal(queryCalls[2].config.skip, false, "facility arrival enables the admin query");
+  check(queryCalls[2].operation !== queryCalls[0].operation, "facility arrival changes the operation so core useGraphqlQuery refetches after skipped mount");
+
   query = {
     isLoading: false,
     data: { claimAdmins: { edges: [{ node: admin("admin-1", "ACTOR", hf1) }] } },

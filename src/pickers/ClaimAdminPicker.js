@@ -74,6 +74,7 @@ const ClaimAdminPicker = (props) => {
             }
         }
         # Context retry ${contextRetry}
+        # Facility scope ${scopedFacilityId || "none"}
       `;
   const { isLoading, data, error } = useGraphqlQuery(
     query,
