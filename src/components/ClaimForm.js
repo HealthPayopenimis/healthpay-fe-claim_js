@@ -678,7 +678,13 @@ class ClaimForm extends Component {
           )}
           {!claim_uuid && !freshContextReady && (
             <div>
-              <ClaimAdminPicker value={this.props.currentClaimAdmin || this.props.claimAdmin} readOnly required onChange={() => {}} />
+              <ClaimAdminPicker
+                value={this.props.currentClaimAdmin || this.props.claimAdmin}
+                readOnly
+                ownsContext
+                required
+                onChange={() => {}}
+              />
               <div>{formatMessage(this.props.intl, "claim", `newClaim.context.${contextReadiness.status}`)}</div>
               {!!back && <Button onClick={back}>{formatMessage(this.props.intl, "claim", "newClaim.context.back")}</Button>}
             </div>

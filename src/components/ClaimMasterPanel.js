@@ -486,6 +486,7 @@ class ClaimMasterPanel extends FormPanel {
                 value={edited.admin}
                 onChange={(v, s) => this.updateAttribute("admin", v)}
                 readOnly
+                ownsContext={false}
                 required
               />
             </Grid>

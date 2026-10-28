@@ -28,6 +28,7 @@ const ClaimAdminPicker = (props) => {
     hfFilter,
     region,
     district,
+    ownsContext = true,
   } = props;
   const userHealthFacilityId = useSelector((state) => state?.loc?.userHealthFacilityFullPath?.uuid);
   const contextRetry = useSelector((state) => state?.claim?.claimAdminContext?.retry || 0);
@@ -117,6 +118,7 @@ const ClaimAdminPicker = (props) => {
   const lastAdminSignature = useRef(null);
 
   useEffect(() => {
+    if (!ownsContext) return;
     if (lastContextSignature.current === contextSignature) return;
     lastContextSignature.current = contextSignature;
     dispatch({
@@ -130,9 +132,10 @@ const ClaimAdminPicker = (props) => {
         adminUuid: currentAdmin?.uuid || null,
       },
     });
-  }, [contextSignature, currentAdmin, data, dispatch, error, i_user, isLoading, scopedFacilityId]);
+  }, [contextSignature, currentAdmin, data, dispatch, error, i_user, isLoading, ownsContext, scopedFacilityId]);
 
   useEffect(() => {
+    if (!ownsContext) return;
     const adminSignature = [
       scopedFacilityId || "",
       i_user || "",
@@ -147,7 +150,7 @@ const ClaimAdminPicker = (props) => {
       return;
     }
     dispatch(setCurrentClaimAdmin(currentAdmin));
-  }, [currentAdmin, data, dispatch, error, i_user, isLoading, scopedFacilityId]);
+  }, [currentAdmin, data, dispatch, error, i_user, isLoading, ownsContext, scopedFacilityId]);
 
   return (
     <Autocomplete

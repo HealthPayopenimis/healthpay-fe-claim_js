@@ -192,8 +192,12 @@ function loadClass(relativePath, className, options = {}) {
 function findElement(tree, type) {
   if (!tree || typeof tree !== "object") return null;
   if (tree.type === type) return tree;
-  const children = tree.props && tree.props.children;
-  for (const child of Array.isArray(children) ? children : [children]) {
+  const props = tree.props || {};
+  const nested = Object.keys(props)
+    .filter((key) => key !== "children")
+    .map((key) => props[key]);
+  const children = [props.children, ...nested];
+  for (const child of children.flat ? children.flat() : children) {
     const found = findElement(child, type);
     if (found) return found;
   }
@@ -514,13 +518,200 @@ function runPickerHookTest() {
   equal(last.payload, null, "old-scope picker response cannot publish the previous actor under a new facility");
 }
 
+function runActualClaimFormPickerCompositionTest() {
+  const hf = facility("hf-1", "HF1");
+  const actor = admin("admin-1", "ACTOR", hf);
+  const pickerDispatches = [];
+  let pickerState = {
+    loc: { userHealthFacilityFullPath: hf },
+    core: { user: { username: "ACTOR" } },
+    claim: { claimAdminContext: { retry: 0 } },
+  };
+  let pickerQuery = { isLoading: true, data: null, error: null };
+  let hookStates = [];
+  let hookIndex = 0;
+  let effects = [];
+  let previousEffectDeps = [];
+  const depsEqual = (a, b) => !!a && !!b && a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
+  const React = makeReact();
+  React.useMemo = (factory, deps) => {
+    const index = hookIndex++;
+    const previous = hookStates[index];
+    if (previous && depsEqual(previous.deps, deps)) return previous.value;
+    const value = factory();
+    hookStates[index] = { deps, value };
+    return value;
+  };
+  React.useRef = (current) => {
+    const index = hookIndex++;
+    if (!hookStates[index]) hookStates[index] = { current };
+    return hookStates[index];
+  };
+  React.useEffect = (effect, deps) => {
+    const index = hookIndex++;
+    const changed = !depsEqual(previousEffectDeps[index], deps);
+    effects.push({ index, effect, changed, deps });
+  };
+  const dispatch = (action) => {
+    if (typeof action === "function") return action(dispatch);
+    pickerDispatches.push(action);
+  };
+  const pickerCore = makeCore({
+    useModulesManager: () => ({ getConf: (_m, _k, fallback) => fallback }),
+    useTranslations: () => ({ formatMessage: (key) => key }),
+    Autocomplete: "Autocomplete",
+    useGraphqlQuery: () => pickerQuery,
+  });
+  const pickerRequire = makeRequire({
+    React,
+    core: pickerCore,
+    reactRedux: {
+      connect: () => identity,
+      useSelector: (selector) => selector(pickerState),
+      useDispatch: () => dispatch,
+    },
+    actions: {
+      setCurrentClaimAdmin: (value) => (innerDispatch) => innerDispatch({ type: "CLAIM_SET_CURRENT_CLAIM_ADMIN", payload: value }),
+    },
+  });
+  const Picker = loadModule(path.join(repoRoot, "src/pickers/ClaimAdminPicker.js"), pickerRequire).default;
+
+  const renderPicker = (props) => {
+    hookIndex = 0;
+    effects = [];
+    const tree = Picker({ onChange: () => {}, readOnly: true, required: true, ...props });
+    for (const effect of effects) if (effect.changed) effect.effect();
+    for (const effect of effects) previousEffectDeps[effect.index] = effect.deps;
+    return tree;
+  };
+  const resetPickerMount = () => {
+    hookStates = [];
+    previousEffectDeps = [];
+  };
+
+  const panelCore = makeCore({
+    FormPanel: class FormPanel {
+      constructor(props) {
+        this.props = props;
+      }
+    },
+    ControlledField: "ControlledField",
+    PublishedComponent: "PublishedComponent",
+    Contributions: "Contributions",
+    AmountInput: "AmountInput",
+    TextInput: "TextInput",
+    ValidatedTextInput: "ValidatedTextInput",
+  });
+  const panelRequire = (request) => {
+    if (request === "react") return React;
+    if (request === "redux") return { bindActionCreators: (value) => value };
+    if (request === "react-redux") return { connect: () => identity };
+    if (request === "react-intl") return { injectIntl: identity };
+    if (request === "lodash") return { round: (value, precision) => Number(Number(value).toFixed(precision)) };
+    if (request === "@openimis/fe-core") return panelCore;
+    if (request === "../constants") return makeRequire() (request);
+    if (request === "../actions") return { claimHealthFacilitySet: () => {}, clearClaim: () => {} };
+    if (request === "../pickers/ClaimAdminPicker") return { __esModule: true, default: Picker };
+    if (request === "../pickers/ClaimStatusPicker" || request === "../pickers/FeedbackStatusPicker" || request === "../pickers/ReviewStatusPicker") {
+      return { __esModule: true, default: "StatusPicker" };
+    }
+    if (request.startsWith("@material-ui")) {
+      if (request === "@material-ui/core") return { Grid: "Grid", Checkbox: "Checkbox", FormControlLabel: "FormControlLabel" };
+      if (request === "@material-ui/core/styles") return { withStyles: () => identity, withTheme: () => identity };
+      return { default: "Icon" };
+    }
+    return {};
+  };
+  const MasterPanel = loadClass("src/components/ClaimMasterPanel.js", "ClaimMasterPanel", { require: panelRequire });
+
+  const formCore = makeCore({ Form: "Form" });
+  const formRequire = (request) => {
+    if (request === "react") return React;
+    if (request === "redux") return { bindActionCreators: (value) => value };
+    if (request === "react-redux") return { connect: () => identity };
+    if (request === "react-intl") return { injectIntl: identity };
+    if (request === "moment") return () => ({ toDate: () => new Date("2026-01-01T00:00:00.000Z") });
+    if (request === "@openimis/fe-core") return formCore;
+    if (request === "../constants") return makeRequire()(request);
+    if (request === "../actions") return { claimHealthFacilitySet: () => {}, fetchClaim: () => {}, generate: () => {}, print: () => {} };
+    if (request === "./claimFormPermissions") return loadModule(path.join(repoRoot, "src/components/claimFormPermissions.js"), makeRequire());
+    if (request === "./claimContextReadiness") return loadModule(path.join(repoRoot, "src/components/claimContextReadiness.js"), makeRequire());
+    if (request === "../pickers/ClaimAdminPicker") return { __esModule: true, default: Picker };
+    if (request === "./ClaimMasterPanel") return { __esModule: true, default: MasterPanel };
+    if (request.startsWith("@material-ui")) {
+      if (request === "@material-ui/core") return { Fab: "Fab", Badge: "Badge", Button: "Button", Grid: "Grid", Tooltip: "Tooltip" };
+      if (request === "@material-ui/core/styles") return { withStyles: () => identity, withTheme: () => identity };
+      return { default: "Icon" };
+    }
+    return new Proxy({}, { get: (_target, name) => name });
+  };
+  const ClaimForm = loadClass("src/components/ClaimForm.js", "ClaimForm", { require: formRequire });
+  const baseProps = claimFormProps({
+    currentUserHF: hf,
+    currentUsername: "ACTOR",
+    fetchedUserHF: true,
+    currentClaimAdmin: null,
+    claimAdminContext: { isLoading: true, fetched: false, error: null, scopeUuid: "hf-1", username: "ACTOR" },
+  });
+  const form = new ClaimForm(baseProps);
+  const loadingTree = form.render();
+  const fallbackPicker = findElement(loadingTree, Picker);
+  check(!!fallbackPicker, "actual ClaimForm mounts the fallback ClaimAdminPicker while context is loading");
+  equal(fallbackPicker.props.ownsContext, true, "fallback picker is the explicit context owner");
+
+  renderPicker({ ownsContext: fallbackPicker.props.ownsContext });
+  check(pickerDispatches.some((action) => action.type === "CLAIM_CLAIM_ADMIN_CONTEXT_SET" && action.payload.isLoading), "owner publishes loading while its request is in flight");
+  pickerQuery = { isLoading: false, data: { claimAdmins: { edges: [{ node: actor }] } }, error: null };
+  renderPicker({ ownsContext: true });
+  check(pickerDispatches.some((action) => action.type === "CLAIM_CLAIM_ADMIN_CONTEXT_SET" && action.payload.fetched), "owner publishes fetched context after the HTTP response");
+  check(pickerDispatches.some((action) => action.type === "CLAIM_SET_CURRENT_CLAIM_ADMIN" && action.payload?.uuid === "admin-1"), "owner publishes the scoped current administrator");
+
+  const readyProps = claimFormProps({
+    currentUserHF: hf,
+    currentUsername: "ACTOR",
+    fetchedUserHF: true,
+    currentClaimAdmin: actor,
+    claimAdminContext: { isLoading: false, fetched: true, error: null, scopeUuid: "hf-1", username: "ACTOR", adminUuid: "admin-1" },
+  });
+  const readyForm = new ClaimForm(readyProps);
+  const readyTree = readyForm.render();
+  const formElement = findElement(readyTree, "Form");
+  check(!!formElement, "completed owner response lets the actual ClaimForm mount the real Form");
+  check(!!formElement.props.HeadPanel, "actual ClaimForm passes ClaimMasterPanel as the Form head panel");
+  const panel = new MasterPanel({
+    modulesManager: readyProps.modulesManager,
+    intl: {},
+    classes: { item: "item" },
+    edited: readyForm.state.claim,
+    readOnly: true,
+    userHealthFacilityFullPath: hf,
+    isCodeValid: true,
+  });
+  const panelTree = panel.render();
+  const nestedPicker = findElement(panelTree, Picker);
+  check(!!nestedPicker, "actual ClaimMasterPanel mounts its readonly admin picker after the Form appears");
+  equal(nestedPicker.props.ownsContext, false, "readonly ClaimMasterPanel picker is display-only and not a context owner");
+
+  const beforeNested = pickerDispatches.length;
+  resetPickerMount();
+  pickerQuery = { isLoading: true, data: null, error: null };
+  renderPicker({ ownsContext: nestedPicker.props.ownsContext });
+  equal(pickerDispatches.length, beforeNested, "nested readonly picker loading does not republish global context loading");
+  const unguardedStart = pickerDispatches.length;
+  resetPickerMount();
+  renderPicker({ ownsContext: true });
+  check(pickerDispatches.length > unguardedStart, "negative control: an unguarded remounted picker republishes loading");
+  check(pickerDispatches.slice(unguardedStart).some((action) => action.type === "CLAIM_CLAIM_ADMIN_CONTEXT_SET" && action.payload.isLoading), "negative control emits the exact loading transition that would gate the Form back to fallback");
+}
+
 (async () => {
   testReadinessPermutations();
   testHealthFacilitiesPage();
   testFreshClaimForm();
   testReducerTransitions();
   runPickerHookTest();
-  console.log(`claim context tests: PASS (${checks} assertions; readiness permutations, real page/form/reducer/picker, baseline negative control)`);
+  runActualClaimFormPickerCompositionTest();
+  console.log(`claim context tests: PASS (${checks} assertions; readiness permutations, real page/form/reducer/picker, actual mount cycle, baseline negative control)`);
 })().catch((error) => {
   console.error(error.stack || error);
   process.exitCode = 1;
