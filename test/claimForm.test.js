@@ -23,6 +23,8 @@ const STATUS_ENTERED = 2;
 const STATUS_REVIEW = 4;
 const BASELINE = "15587e2961f59ab26e1d21cdef97ef12a5182309";
 const repoRoot = path.join(__dirname, "..");
+const CORE_FORM_CHECKOUT = "/home/ubuntu/healthpay-dev-fixes/healthpay-fe-core_js/src/components/generics/Form.js";
+const CORE_FORM_FIXTURE = path.join(repoRoot, "test/fixtures/core-Form.d5ed063.js");
 
 const constants = {
   RIGHT_ADD,
@@ -253,6 +255,13 @@ function baseClaimProps(overrides = {}) {
 }
 
 function findElement(tree, type) {
+  if (Array.isArray(tree)) {
+    for (const child of tree) {
+      const found = findElement(child, type);
+      if (found) return found;
+    }
+    return null;
+  }
   if (!tree || typeof tree !== "object") return null;
   if (tree.type === type) return tree;
   const children = tree.props && tree.props.children;
@@ -261,6 +270,58 @@ function findElement(tree, type) {
     if (found) return found;
   }
   return null;
+}
+
+function makeCoreFormRequire() {
+  const React = makeReact();
+  return (request) => {
+    if (request === "react") return React;
+    if (request === "@material-ui/core") {
+      return {
+        Fab: "Fab",
+        Grid: "Grid",
+        Paper: "Paper",
+        IconButton: "IconButton",
+        Typography: "Typography",
+        Divider: "Divider",
+        Tooltip: "Tooltip",
+      };
+    }
+    if (request === "@material-ui/core/styles") return { withStyles: () => identity, withTheme: identity };
+    if (request === "react-intl") return { injectIntl: identity };
+    if (["@material-ui/icons/Add", "@material-ui/icons/Save", "@material-ui/icons/ChevronLeft"].includes(request))
+      return "Icon";
+    if (request === "./FormattedMessage" || request === "./Contributions") return "Component";
+    if (request === "../../helpers/history") return identity;
+    if (request === "../../helpers/i18n") return { withTooltip: (content) => content, formatMessage: () => "tooltip" };
+    if (request === "lodash") return {};
+    return {};
+  };
+}
+
+function loadExactCoreFormClass() {
+  const sourcePath = fs.existsSync(CORE_FORM_CHECKOUT) ? CORE_FORM_CHECKOUT : CORE_FORM_FIXTURE;
+  return loadClass(sourcePath, "Form", { require: makeCoreFormRequire() });
+}
+
+function coreFormProps(claimForm) {
+  const rendered = findElement(claimForm.render(), "Form");
+  assert.ok(rendered, "ClaimForm renders the exact Core Form integration point");
+  return {
+    ...rendered.props,
+    classes: {
+      paper: "paper",
+      paperHeader: "paper-header",
+      paperHeaderAction: "paper-header-action",
+      tooltipContainer: "tooltip-container",
+      flexTooltip: "flex-tooltip",
+    },
+    canSave: () => true,
+  };
+}
+
+function coreSaveFab(coreForm) {
+  return findElement(coreForm.render(), "Fab");
 }
 
 function testPermissionMatrix() {
@@ -444,6 +505,78 @@ async function testReduxTransportFailureRecovery() {
   assert.strictEqual(form.state.isSaved, false, "retry failure also clears the saved flag");
 }
 
+async function testExactCoreFormRecoveryLifecycle() {
+  const CoreForm = loadExactCoreFormClass();
+  const ClaimForm = loadClass(path.join(repoRoot, "src/components/ClaimForm.js"), "ClaimForm");
+  let transportCalls = 0;
+  const claimForm = new ClaimForm(
+    baseClaimProps({
+      save: () => {
+        transportCalls += 1;
+        return Promise.reject(new Error("exact Core Form lifecycle rejection"));
+      },
+    }),
+  );
+  const coreForm = new CoreForm(coreFormProps(claimForm));
+  const draft = { ...claimForm.state.claim, code: "CORE-RETRY", description: "retain this draft" };
+
+  coreForm.onEditedChanged(draft);
+  coreForm.save(draft);
+  assert.strictEqual(coreForm.state.dirty, true, "exact Core Form marks the edited claim dirty");
+  assert.strictEqual(coreForm.state.saving, true, "exact Core Form locks Save while the first attempt is pending");
+  assert.strictEqual(coreSaveFab(coreForm).props.disabled, true, "exact Core Form disables Save during the first attempt");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.strictEqual(transportCalls, 1, "the exact Core Form path makes one real first save attempt");
+  assert.strictEqual(claimForm.state.claim.description, draft.description, "claim recovery retains the edited draft");
+  assert.strictEqual(claimForm.state.lockNew, false, "claim recovery unlocks the form");
+  assert.strictEqual(claimForm.state.isSaved, false, "claim recovery clears the saved flag");
+  assert.strictEqual(claimForm.state.saveRecoveryVersion, 1, "claim recovery emits one update version");
+
+  const previousCoreProps = coreForm.props;
+  coreForm.props = coreFormProps(claimForm);
+  coreForm.componentDidUpdate(previousCoreProps, coreForm.state);
+  assert.strictEqual(coreForm.state.dirty, true, "Core Form recovery does not discard dirty state");
+  assert.strictEqual(coreForm.state.saving, false, "Core Form update signal clears only saving");
+  assert.strictEqual(coreSaveFab(coreForm).props.disabled, false, "the recovered Core Form Save control is enabled");
+
+  coreForm.save(claimForm.state.claim);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(transportCalls, 2, "the recovered exact Core Form permits a genuine second save attempt");
+}
+
+async function testOldClaimRecoveryLeavesExactCoreFormSaving() {
+  const CoreForm = loadExactCoreFormClass();
+  const oldClaimSource = childProcess.execFileSync("git", ["show", "HEAD:src/components/ClaimForm.js"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  const ClaimForm = loadClass(path.join(repoRoot, "src/components/ClaimForm.js"), "ClaimForm", {
+    source: oldClaimSource,
+  });
+  let transportCalls = 0;
+  const claimForm = new ClaimForm(
+    baseClaimProps({
+      save: () => {
+        transportCalls += 1;
+        return Promise.reject(new Error("old exact Core Form lifecycle rejection"));
+      },
+    }),
+  );
+  const coreForm = new CoreForm(coreFormProps(claimForm));
+  const draft = { ...claimForm.state.claim, code: "OLD-CORE-RETRY", description: "old draft" };
+  coreForm.onEditedChanged(draft);
+  coreForm.save(draft);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(transportCalls, 1, "old claim path makes one first save attempt");
+  const previousCoreProps = coreForm.props;
+  coreForm.props = coreFormProps(claimForm);
+  coreForm.componentDidUpdate(previousCoreProps, coreForm.state);
+  assert.strictEqual(coreForm.state.dirty, true, "old claim recovery still retains dirty state");
+  assert.strictEqual(coreForm.state.saving, true, "old claim recovery leaves exact Core Form saving stuck");
+  assert.strictEqual(coreSaveFab(coreForm).props.disabled, true, "old claim recovery leaves Save disabled");
+}
+
 async function testBaselineReduxTransportNegativeControl() {
   const baselineReducer = loadModule(path.join(repoRoot, "src/reducer.js"), {
     ...makeRequire(),
@@ -535,6 +668,8 @@ async function testBaselineNegativeControls() {
   testRealClaimFormRender();
   await testRealClaimFormSaveRecovery();
   await testReduxTransportFailureRecovery();
+  await testExactCoreFormRecoveryLifecycle();
+  await testOldClaimRecoveryLeavesExactCoreFormSaving();
   await testBaselineReduxTransportNegativeControl();
   await testRealEditPageSave();
   await testBaselineNegativeControls();

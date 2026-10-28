@@ -36,7 +36,13 @@ export function isClaimFormReadOnly({
 export function recoverClaimFormAfterSaveError(state) {
   const claim = { ...(state.claim || {}) };
   delete claim.clientMutationId;
-  return { ...state, claim, lockNew: false, isSaved: false };
+  return {
+    ...state,
+    claim,
+    lockNew: false,
+    isSaved: false,
+    saveRecoveryVersion: (state.saveRecoveryVersion || 0) + 1,
+  };
 }
 
 export function saveClaimWithRecovery(save, claim, onSaved, onError) {

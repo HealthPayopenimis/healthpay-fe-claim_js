@@ -86,6 +86,7 @@ class ClaimForm extends Component {
     isDuplicate: false,
     isRestored: false,
     isSaved: false,
+    saveRecoveryVersion: 0,
   };
 
   constructor(props) {
@@ -638,6 +639,7 @@ class ClaimForm extends Component {
       edited_id: claim_uuid,
       edited: this.state.claim,
       reset: this.state.reset,
+      update: this.state.saveRecoveryVersion || 0,
       back: back,
       forcedDirty: this.state.forcedDirty,
       add: !!add && !this.state.newClaim ? this._add : null,
